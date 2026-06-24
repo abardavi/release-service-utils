@@ -6,6 +6,9 @@ FROM registry.redhat.io/advanced-cluster-security/rhacs-roxctl-rhel8:4.10.3-1 as
 
 FROM registry.access.redhat.com/ubi10/ubi:10.2-1780550529
 
+ADD data/certs/2015-IT-Root-CA.pem data/certs/2022-IT-Root-CA.pem /etc/pki/ca-trust/source/anchors/
+RUN update-ca-trust
+
 ARG COSIGN_VERSION=2.4.1
 ARG COSIGN3_VERSION=3.0.4
 ARG KUBECTL_VERSION=1.27.2
@@ -15,6 +18,7 @@ ARG GLAB_VERSION=1.51.0
 ARG GH_VERSION=2.82.1
 ARG SYFT_VERSION=1.19.0
 ARG KUBEARCHIVE_VERSION=1.17.3
+ARG UTILITY_SCRIPTS_VERSION=1fd4c54651652afca13c08a7a7182e50e6f02ebb
 
 RUN ARCH=$(uname -m) && \
     if [ "$ARCH" = "x86_64" ]; then \
@@ -29,9 +33,12 @@ RUN ARCH=$(uname -m) && \
     curl -L https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${GO_ARCH}.tar.gz  | tar -C /usr -xzf - --strip=1 gh_${GH_VERSION}_linux_${GO_ARCH}/bin/gh &&\
     curl -L https://github.com/anchore/syft/releases/download/v${SYFT_VERSION}/syft_${SYFT_VERSION}_linux_${GO_ARCH}.tar.gz | tar -C /usr/bin/ -xzf - syft &&\
     curl -L https://github.com/kubearchive/kubearchive/releases/download/v${KUBEARCHIVE_VERSION}/kubectl-ka-linux-${GO_ARCH} -o /usr/bin/kubectl-ka &&\
-    chmod +x /usr/bin/{yq,kubectl,opm,glab,gh,syft,kubectl-ka}
+    curl -L https://gitlab.cee.redhat.com/rcm/utility-scripts/-/raw/${UTILITY_SCRIPTS_VERSION}/middleware/provenance.sh -o /usr/bin/provenance.sh &&\
+    chmod +x /usr/bin/{yq,kubectl,opm,glab,gh,syft,kubectl-ka,provenance.sh}
 
 RUN dnf install -y https://dl.fedoraproject.org/pub/epel/epel-release-latest-10.noarch.rpm
+
+COPY data/repos/rcm-tools-rhel-10-baseos.repo /etc/yum.repos.d/rcm-tools-rhel-10-baseos.repo
 
 COPY --from=oras /usr/bin/oras /usr/bin/oras
 COPY --from=oras /usr/local/bin/select-oci-auth /usr/local/bin/select-oci-auth
@@ -88,14 +95,20 @@ RUN dnf -y --setopt=tsflags=nodocs install \
     gcc \
     python3-qpid-proton \
     zip \
+    rh-signing-client \
+    rh-signing-client-stage \
     && dnf clean all
 
 RUN curl -LO https://github.com/release-engineering/exodus-rsync/releases/latest/download/exodus-rsync && \
     chmod +x exodus-rsync && mv exodus-rsync /usr/local/bin/rsync
 
+RUN --mount=type=ssh \
+    mkdir -p ~/.ssh && \
+    ssh-keyscan gitlab.cee.redhat.com >> ~/.ssh/known_hosts
+
 # Install Python dependencies using uv
 COPY pyproject.toml uv.lock ./
-RUN uv pip install -r pyproject.toml --system && \
+RUN --mount=type=ssh uv pip install -r pyproject.toml --system && \
     # Remove PyPI's python-qpid-proton so the system RPM (python3-qpid-proton) takes precedence.
     # The PyPI wheel bundles its own OpenSSL which doesn't use the system CA trust store.
     # The system RPM is properly linked to the distro's OpenSSL and respects /etc/pki/ca-trust.
@@ -103,9 +116,6 @@ RUN uv pip install -r pyproject.toml --system && \
 
 # remove gcc, required only for compiling gssapi indirect dependency of pubtools-pulp via pushsource
 RUN dnf -y remove gcc
-
-ADD data/certs/2015-IT-Root-CA.pem data/certs/2022-IT-Root-CA.pem /etc/pki/ca-trust/source/anchors/
-RUN update-ca-trust
 
 COPY pyxis /home/pyxis
 COPY utils /home/utils
@@ -144,6 +154,8 @@ RUN groupadd -g 1001 group1 && \
     chmod -R g+rwX /var/workdir /tekton /home && \
     # Ensure group permissions are inherited by new subdirectories
     find /var/workdir /home /tekton -type d -exec chmod g+s {} +
+
+COPY data/config/ud2.ini /tekton/home/.config/ud2/config.ini
 
 # Switch to a non-root user
 USER 1001

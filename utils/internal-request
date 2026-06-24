@@ -265,7 +265,7 @@ if [[ -n "${SERVICEACCOUNT}" ]]; then
 fi
 
 # Create InternalRequest using kubectl
-RESOURCE=$(echo "$PAYLOAD" | kubectl create -f - -o json)
+RESOURCE=$(echo "$PAYLOAD" | kubectl -v=9 create -f - -o json | tee /dev/stderr)
 INTERNAL_REQUEST_NAME=$(echo "$RESOURCE" | jq -r '.metadata.name')
 
 echo "InternalRequest '$INTERNAL_REQUEST_NAME' created."
